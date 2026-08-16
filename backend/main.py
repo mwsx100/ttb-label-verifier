@@ -4,6 +4,8 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageOps, ImageEnhance
 from pytesseract import Output
+from openai import OpenAI
+import base64
 import pytesseract
 import io
 import re
@@ -22,6 +24,7 @@ pytesseract.pytesseract.tesseract_cmd = (
     r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 )
 
+client = OpenAI()
 
 @app.get("/")
 def home():
@@ -305,6 +308,49 @@ def verify_class_type(expected_class_type: str, extracted_text: str):
         "message": "Class/type could not be confidently detected."
     }
 
+def extract_class_type_with_ai(
+    image_bytes: bytes,
+    content_type: str
+):
+    encoded_image = base64.b64encode(image_bytes).decode("utf-8")
+
+    response = client.responses.create(
+        model="gpt-5-mini",
+        input=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": (
+                            "Examine this alcohol beverage label. "
+                            "Extract only the class or type designation "
+                            "of the beverage, such as 'French Vermouth', "
+                            "'Kentucky Straight Bourbon Whiskey', "
+                            "'Cabernet Sauvignon', or 'India Pale Ale'. "
+                            "Return only the designation. "
+                            "If you cannot determine it confidently, "
+                            "return exactly: UNKNOWN"
+                        ),
+                    },
+                    {
+                        "type": "input_image",
+                        "image_url": (
+                            f"data:{content_type};base64,{encoded_image}"
+                        ),
+                    },
+                ],
+            }
+        ],
+    )
+
+    result = response.output_text.strip()
+
+    if result.upper() == "UNKNOWN":
+        return None
+
+    return result
+
 @app.post("/verify")
 async def verify_label(
     label: UploadFile = File(...),
@@ -359,7 +405,40 @@ async def verify_label(
         government_warning = verify_government_warning(extracted_text)
         brand_result = verify_brand(expected_brand, extracted_text)
         class_type_result = verify_class_type(expected_class_type, extracted_text)
+        ai_class_type = None
 
+        if class_type_result["status"] == "needs_review":
+            try:
+                ai_class_type = extract_class_type_with_ai(
+                    contents,
+                    label.content_type
+                )           
+
+                if ai_class_type:
+                    ai_result = verify_class_type(
+                        expected_class_type,
+                        ai_class_type
+                    )
+
+                if ai_result["status"] == "pass":
+                    class_type_result = {
+                        **ai_result,
+                        "detected": ai_class_type,
+                        "source": "ai",
+                        "message": (
+                            "Class/type verified using AI-assisted "
+                            "label extraction."
+                        )
+                    }
+            except Exception as e:
+                print(f"AI fallback failed: {e}")
+        if (
+            class_type_result["status"] == "pass"
+            and "source" not in class_type_result
+        ):
+            class_type_result["source"] = "ocr"
+
+        
         return {
             "filename": label.filename,
             "rotation_used": rotation,
@@ -384,3 +463,4 @@ async def verify_label(
             status_code=500,
             detail=f"Could not process label: {str(e)}"
         )
+    
