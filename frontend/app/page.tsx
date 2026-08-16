@@ -26,6 +26,12 @@ type Result = {
       expected: string;
       message: string;
     };
+    class_type?: {
+      status: VerificationStatus;
+      expected: string;
+      score: number;
+      message: string;
+    };
   };
   ocr_confidence?: number;
   extracted_text?: string;
@@ -34,6 +40,7 @@ type Result = {
 export default function Home() {
   const [brand, setBrand] = useState("");
   const [abv, setAbv] = useState("");
+  const [classType, setClassType] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [result, setResult] = useState<Result | null>(null);
@@ -61,6 +68,7 @@ export default function Home() {
     formData.append("label", file);
     formData.append("expected_brand", brand);
     formData.append("expected_abv", abv);
+    formData.append("expected_class_type", classType);
 
     setLoading(true);
     setResult(null);
@@ -101,6 +109,19 @@ export default function Home() {
               ? brand
               : "Not confidently detected",
         },
+
+        {
+          label: "Class / Type",
+          status:
+            result.verification?.class_type?.status ??
+            "needs_review",
+          expected: classType,
+          detected:
+            result.verification?.class_type?.status === "pass"
+              ? classType
+              : "Not confidently detected",
+        },
+
         {
           label: "Alcohol Content",
           status: result.verification?.abv?.status ?? "needs_review",
@@ -176,7 +197,19 @@ export default function Home() {
                   className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-slate-900"
                 />
               </div>
+              <div className="mt-5">
+                <label className="mb-2 block text-sm font-medium text-slate-700">
+                  Class / Type
+                </label>
 
+                <input
+                  value={classType}
+                  onChange={(e) => setClassType(e.target.value)}
+                  required
+                  placeholder="French Vermouth"
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-slate-900"
+                />
+              </div>
               <div className="mt-5">
                 <label className="mb-2 block text-sm font-medium text-slate-700">
                   Alcohol by Volume
@@ -198,6 +231,7 @@ export default function Home() {
                   </span>
                 </div>
               </div>
+              
             </section>
 
             <section className="rounded-xl border bg-white p-6 shadow-sm">
