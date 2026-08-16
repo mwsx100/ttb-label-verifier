@@ -1,21 +1,61 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+
+type VerificationStatus = "pass" | "fail" | "needs_review";
+
+type Result = {
+  extracted_fields?: {
+    abv?: number | null;
+    net_contents?: string | null;
+    government_warning?: {
+      found: boolean;
+      matched_words: string[];
+      match_count: number;
+    };
+  };
+  verification?: {
+    abv?: {
+      status: VerificationStatus;
+      expected: number;
+      detected: number | null;
+      message: string;
+    };
+    brand?: {
+      status: VerificationStatus;
+      expected: string;
+      message: string;
+    };
+  };
+  ocr_confidence?: number;
+  extracted_text?: string;
+};
 
 export default function Home() {
   const [brand, setBrand] = useState("");
   const [abv, setAbv] = useState("");
   const [file, setFile] = useState<File | null>(null);
-  const [result, setResult] = useState<any>(null);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [result, setResult] = useState<Result | null>(null);
   const [loading, setLoading] = useState(false);
+  const [processingTime, setProcessingTime] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!file) {
+      setPreview(null);
+      return;
+    }
+
+    const url = URL.createObjectURL(file);
+    setPreview(url);
+
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
 
-    if (!file) {
-      alert("Please select a label image.");
-      return;
-    }
+    if (!file) return;
 
     const formData = new FormData();
     formData.append("label", file);
@@ -24,6 +64,9 @@ export default function Home() {
 
     setLoading(true);
     setResult(null);
+    setProcessingTime(null);
+
+    const start = performance.now();
 
     try {
       const response = await fetch("http://127.0.0.1:8000/verify", {
@@ -31,136 +74,237 @@ export default function Home() {
         body: formData,
       });
 
+      if (!response.ok) {
+        throw new Error("Verification failed.");
+      }
+
       const data = await response.json();
 
       setResult(data);
+      setProcessingTime((performance.now() - start) / 1000);
     } catch (error) {
       console.error(error);
-      alert("Could not connect to the verification server.");
+      alert("Could not verify this label.");
     } finally {
       setLoading(false);
     }
   }
 
+  const results = result
+    ? [
+        {
+          label: "Brand Name",
+          status: result.verification?.brand?.status ?? "needs_review",
+          expected: brand,
+          detected:
+            result.verification?.brand?.status === "pass"
+              ? brand
+              : "Not confidently detected",
+        },
+        {
+          label: "Alcohol Content",
+          status: result.verification?.abv?.status ?? "needs_review",
+          expected: `${abv}%`,
+          detected:
+            result.extracted_fields?.abv != null
+              ? `${result.extracted_fields.abv}%`
+              : "Not detected",
+        },
+        {
+          label: "Government Warning",
+          status: result.extracted_fields?.government_warning?.found
+            ? "pass"
+            : "needs_review",
+          expected: "Required",
+          detected: result.extracted_fields?.government_warning?.found
+            ? "Warning language detected"
+            : "Not confidently detected",
+        },
+        {
+          label: "Net Contents",
+          status: result.extracted_fields?.net_contents
+            ? "pass"
+            : "needs_review",
+          expected: "Required",
+          detected:
+            result.extracted_fields?.net_contents ??
+            "Check label or container marking",
+        },
+      ]
+    : [];
+
+  const passed = results.filter((r) => r.status === "pass").length;
+  const failed = results.filter((r) => r.status === "fail").length;
+  const review = results.filter((r) => r.status === "needs_review").length;
+
   return (
-    <main className="min-h-screen bg-gray-100 p-8">
-      <div className="mx-auto max-w-3xl">
-        <h1 className="text-3xl font-bold text-gray-900">
-          Alcohol Label Verification
-        </h1>
+    <main className="min-h-screen bg-slate-100">
+      <header className="border-b bg-white">
+        <div className="mx-auto max-w-6xl px-6 py-5">
+          <h1 className="text-2xl font-semibold text-slate-900">
+            Alcohol Label Verification
+          </h1>
+          <p className="mt-1 text-sm text-slate-600">
+            AI-assisted review of beverage label artwork.
+          </p>
+        </div>
+      </header>
 
-        <p className="mt-2 text-gray-600">
-          Compare label artwork against application information.
-        </p>
+      <div className="mx-auto max-w-6xl px-6 py-8">
+        <form onSubmit={handleSubmit}>
+          <div className="grid gap-6 lg:grid-cols-2">
 
-        <form
-          onSubmit={handleSubmit}
-          className="mt-8 rounded-lg bg-white p-6 shadow"
-        >
-          <div className="mb-5">
-            <label className="mb-2 block font-medium text-gray-800">
-              Brand Name
-            </label>
+            <section className="rounded-xl border bg-white p-6 shadow-sm">
+              <h2 className="text-lg font-semibold text-slate-900">
+                Application Information
+              </h2>
 
-            <input
-              type="text"
-              value={brand}
-              onChange={(event) => setBrand(event.target.value)}
-              required
-              className="w-full rounded border border-gray-300 p-3 text-black"
-              placeholder="Noilly Prat"
-            />
+              <p className="mt-1 text-sm text-slate-500">
+                Enter the information submitted with the application.
+              </p>
+
+              <div className="mt-6">
+                <label className="mb-2 block text-sm font-medium text-slate-700">
+                  Brand Name
+                </label>
+
+                <input
+                  value={brand}
+                  onChange={(e) => setBrand(e.target.value)}
+                  required
+                  placeholder="Noilly Prat"
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2.5 text-slate-900"
+                />
+              </div>
+
+              <div className="mt-5">
+                <label className="mb-2 block text-sm font-medium text-slate-700">
+                  Alcohol by Volume
+                </label>
+
+                <div className="relative">
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={abv}
+                    onChange={(e) => setAbv(e.target.value)}
+                    required
+                    placeholder="16"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2.5 pr-10 text-slate-900"
+                  />
+
+                  <span className="absolute right-3 top-2.5 text-slate-500">
+                    %
+                  </span>
+                </div>
+              </div>
+            </section>
+
+            <section className="rounded-xl border bg-white p-6 shadow-sm">
+              <h2 className="text-lg font-semibold text-slate-900">
+                Label Artwork
+              </h2>
+
+              <p className="mt-1 text-sm text-slate-500">
+                Upload an image of the beverage label.
+              </p>
+
+              <label className="mt-6 flex min-h-64 cursor-pointer items-center justify-center rounded-lg border-2 border-dashed border-slate-300 bg-slate-50 p-4">
+                {preview ? (
+                  <img
+                    src={preview}
+                    alt="Label preview"
+                    className="max-h-72 rounded object-contain"
+                  />
+                ) : (
+                  <div className="text-center">
+                    <div className="text-sm font-medium text-slate-700">
+                      Select label image
+                    </div>
+
+                    <div className="mt-1 text-xs text-slate-500">
+                      JPG, PNG, or other common image format
+                    </div>
+                  </div>
+                )}
+
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                />
+              </label>
+            </section>
           </div>
 
-          <div className="mb-5">
-            <label className="mb-2 block font-medium text-gray-800">
-              Alcohol by Volume (%)
-            </label>
-
-            <input
-              type="number"
-              step="0.1"
-              value={abv}
-              onChange={(event) => setAbv(event.target.value)}
-              required
-              className="w-full rounded border border-gray-300 p-3 text-black"
-              placeholder="16"
-            />
+          <div className="mt-6 flex justify-end">
+            <button
+              type="submit"
+              disabled={loading || !file}
+              className="rounded-lg bg-slate-900 px-6 py-3 font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {loading ? "Analyzing Label..." : "Verify Label"}
+            </button>
           </div>
-
-          <div className="mb-6">
-            <label className="mb-2 block font-medium text-gray-800">
-              Label Image
-            </label>
-
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(event) =>
-                setFile(event.target.files?.[0] ?? null)
-              }
-              required
-              className="block w-full text-gray-700"
-            />
-          </div>
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="rounded bg-blue-700 px-6 py-3 font-semibold text-white disabled:opacity-50"
-          >
-            {loading ? "Verifying..." : "Verify Label"}
-          </button>
         </form>
 
         {result && (
-          <div className="mt-8 rounded-lg bg-white p-6 shadow">
-            <h2 className="text-2xl font-bold text-gray-900">
-              Verification Results
-            </h2>
+          <section className="mt-8 rounded-xl border bg-white p-6 shadow-sm">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <h2 className="text-xl font-semibold text-slate-900">
+                  Verification Summary
+                </h2>
 
-            <div className="mt-5 space-y-4">
-              <ResultRow
-                label="Brand Name"
-                status={result.verification?.brand?.status}
-                message={result.verification?.brand?.message}
-              />
+                {processingTime !== null && (
+                  <p className="mt-1 text-sm text-slate-500">
+                    Processed in {processingTime.toFixed(2)} seconds
+                  </p>
+                )}
+              </div>
 
-              <ResultRow
-                label="Alcohol Content"
-                status={result.verification?.abv?.status}
-                message={result.verification?.abv?.message}
-              />
+              <div className="flex gap-2 text-sm">
+                <SummaryBadge label={`${passed} Passed`} type="pass" />
 
-              <ResultRow
-                label="Government Warning"
-                status={
-                  result.extracted_fields?.government_warning?.found
-                    ? "pass"
-                    : "needs_review"
-                }
-                message={
-                  result.extracted_fields?.government_warning?.found
-                    ? "Government warning detected."
-                    : "Government warning could not be confidently detected."
-                }
-              />
+                {review > 0 && (
+                  <SummaryBadge
+                    label={`${review} Needs Review`}
+                    type="needs_review"
+                  />
+                )}
 
-              <ResultRow
-                label="Net Contents"
-                status={
-                  result.extracted_fields?.net_contents
-                    ? "pass"
-                    : "needs_review"
-                }
-                message={
-                  result.extracted_fields?.net_contents
-                    ? `Detected: ${result.extracted_fields.net_contents}`
-                    : "Not detected. Check label or container marking."
-                }
-              />
+                {failed > 0 && (
+                  <SummaryBadge label={`${failed} Failed`} type="fail" />
+                )}
+              </div>
             </div>
-          </div>
+
+            <div className="mt-6 overflow-hidden rounded-lg border">
+              {results.map((item) => (
+                <ResultRow key={item.label} {...item} />
+              ))}
+            </div>
+
+            <details className="mt-6 rounded-lg border p-4">
+              <summary className="cursor-pointer font-medium text-slate-700">
+                OCR Details
+              </summary>
+
+              <div className="mt-4">
+                <p className="text-sm text-slate-600">
+                  OCR confidence:{" "}
+                  <strong>
+                    {result.ocr_confidence?.toFixed(1) ?? "N/A"}%
+                  </strong>
+                </p>
+
+                <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap rounded bg-slate-100 p-4 text-xs text-slate-700">
+                  {result.extracted_text}
+                </pre>
+              </div>
+            </details>
+          </section>
         )}
       </div>
     </main>
@@ -170,28 +314,69 @@ export default function Home() {
 function ResultRow({
   label,
   status,
-  message,
+  expected,
+  detected,
 }: {
   label: string;
-  status?: string;
-  message?: string;
+  status: VerificationStatus;
+  expected: string;
+  detected: string;
 }) {
-  const symbol =
-    status === "pass"
-      ? "✓"
-      : status === "fail"
-        ? "✕"
-        : "⚠";
+  const statusText = {
+    pass: "Pass",
+    fail: "Fail",
+    needs_review: "Needs Review",
+  }[status];
 
   return (
-    <div className="rounded border border-gray-200 p-4">
-      <div className="font-semibold text-gray-900">
-        {symbol} {label}
+    <div className="grid gap-3 border-b p-4 last:border-b-0 md:grid-cols-4">
+      <div className="font-medium text-slate-900">{label}</div>
+
+      <div>
+        <div className="text-xs uppercase text-slate-400">Expected</div>
+        <div className="mt-1 text-sm text-slate-700">{expected}</div>
       </div>
 
-      <div className="mt-1 text-sm text-gray-600">
-        {message ?? "No result available."}
+      <div>
+        <div className="text-xs uppercase text-slate-400">Detected</div>
+        <div className="mt-1 text-sm text-slate-700">{detected}</div>
+      </div>
+
+      <div className="md:text-right">
+        <StatusBadge label={statusText} type={status} />
       </div>
     </div>
   );
+}
+
+function StatusBadge({
+  label,
+  type,
+}: {
+  label: string;
+  type: VerificationStatus;
+}) {
+  const styles = {
+    pass: "bg-green-100 text-green-800",
+    fail: "bg-red-100 text-red-800",
+    needs_review: "bg-amber-100 text-amber-800",
+  };
+
+  return (
+    <span
+      className={`inline-block rounded-full px-3 py-1 text-xs font-semibold ${styles[type]}`}
+    >
+      {label}
+    </span>
+  );
+}
+
+function SummaryBadge({
+  label,
+  type,
+}: {
+  label: string;
+  type: VerificationStatus;
+}) {
+  return <StatusBadge label={label} type={type} />;
 }

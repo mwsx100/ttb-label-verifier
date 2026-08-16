@@ -1,3 +1,5 @@
+from turtle import width
+from rapidfuzz import fuzz
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageOps, ImageEnhance
@@ -31,7 +33,28 @@ def preprocess_image(image: Image.Image) -> Image.Image:
     image = image.convert("L")
 
     width, height = image.size
-    image = image.resize((width * 2, height * 2))
+
+    max_dimension = 2000
+
+    if max(width, height) > max_dimension:
+        scale = max_dimension / max(width, height)
+
+        image = image.resize(
+            (
+                int(width * scale),
+                int(height * scale)
+            )
+        )
+    
+    elif max(width, height) < 1200:
+        scale = 1200 / max(width, height)
+
+        image = image.resize(
+            (
+                int(width * scale),
+                int(height * scale)
+            )
+        )
 
     image = ImageOps.autocontrast(image)
     image = ImageEnhance.Sharpness(image).enhance(1.5)
@@ -48,6 +71,7 @@ def get_ocr_score(image: Image.Image):
 
     confidences = []
     readable_words = 0
+    words = []
 
     for text, confidence in zip(data["text"], data["conf"]):
         text = text.strip()
@@ -59,20 +83,26 @@ def get_ocr_score(image: Image.Image):
 
         if confidence >= 0 and text:
             confidences.append(confidence)
+            words.append(text)
 
-            # Only count text that looks somewhat word-like
             if any(char.isalpha() for char in text):
                 readable_words += 1
 
     if not confidences:
-        return 0, 0, 0
+        return 0, 0, 0, ""
 
     average_confidence = sum(confidences) / len(confidences)
 
-    # Reward both confident OCR and finding more actual words
     score = average_confidence + (readable_words * 1.5)
 
-    return score, average_confidence, readable_words
+    extracted_text = " ".join(words)
+
+    return (
+        score,
+        average_confidence,
+        readable_words,
+        extracted_text
+    )
 
 
 def find_best_rotation(image: Image.Image):
@@ -84,26 +114,28 @@ def find_best_rotation(image: Image.Image):
     }
 
     best_angle = 0
-    best_image = image
     best_score = -1
     best_confidence = 0
     best_word_count = 0
+    best_text = ""
 
     for angle, rotated_image in rotations.items():
-        score, confidence, word_count = get_ocr_score(rotated_image)
+        score, confidence, word_count, text = get_ocr_score(
+            rotated_image
+        )
 
         if score > best_score:
             best_score = score
             best_angle = angle
-            best_image = rotated_image
             best_confidence = confidence
             best_word_count = word_count
+            best_text = text
 
     return (
-        best_image,
         best_angle,
         best_confidence,
-        best_word_count
+        best_word_count,
+        best_text
     )
 
 def extract_abv(text: str):
@@ -146,31 +178,32 @@ def extract_net_contents(text: str):
 
 
 def detect_government_warning(text: str):
-    normalized = text.upper()
+    normalized = normalize_text(text).upper()
 
-    warning_words = [
-        "GENERAL",
-        "WOMEN",
-        "DRINK",
+    indicators = [
+        "ACCORDING TO THE",
         "ALCOHOLIC",
         "PREGNANCY",
-        "RISK",
-        "BEVERAGES"
+        "DRIVE A CAR",
+        "DRIVEACAR",
+        "HEALTH PROBLEMS",
+        "CONSUMPTION",
+        "WOMEN",
+        "DRINK",
     ]
 
-    matches = []
+    matched = []
 
-    for word in warning_words:
-        if word in normalized:
-            matches.append(word)
+    for indicator in indicators:
+        if indicator in normalized:
+            matched.append(indicator)
 
-    # Enough distinctive warning-language detected
-    found = len(matches) >= 4
+    found = len(matched) >= 3
 
     return {
         "found": found,
-        "matched_words": matches,
-        "match_count": len(matches)
+        "matched_words": matched,
+        "match_count": len(matched)
     }
 
 def normalize_text(value: str):
@@ -188,15 +221,37 @@ def verify_brand(expected_brand: str, extracted_text: str):
         return {
             "status": "pass",
             "expected": expected_brand,
+            "score": 100,
             "message": "Brand name detected on the label."
+        }
+
+    score = fuzz.partial_ratio(
+        normalized_brand,
+        normalized_ocr
+    )
+
+    if score >= 85:
+        return {
+            "status": "pass",
+            "expected": expected_brand,
+            "score": round(score, 1),
+            "message": "Brand name detected with minor OCR differences."
+        }
+
+    if score >= 65:
+        return {
+            "status": "needs_review",
+            "expected": expected_brand,
+            "score": round(score, 1),
+            "message": "Possible brand name match. Human review recommended."
         }
 
     return {
         "status": "needs_review",
         "expected": expected_brand,
+        "score": round(score, 1),
         "message": "Brand name could not be confidently detected."
     }
-
 
 @app.post("/verify")
 async def verify_label(
@@ -218,13 +273,8 @@ async def verify_label(
 
         processed_image = preprocess_image(image)
 
-        best_image, rotation, confidence, word_count = find_best_rotation(
+        rotation, confidence, word_count, extracted_text = find_best_rotation(
             processed_image
-        )
-
-        extracted_text = pytesseract.image_to_string(
-            best_image,
-            config="--psm 3"
         )
 
         abv = extract_abv(extracted_text)
