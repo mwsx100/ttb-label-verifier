@@ -177,7 +177,7 @@ def extract_net_contents(text: str):
     return f"{amount} {unit}"
 
 
-def detect_government_warning(text: str):
+def verify_government_warning(text: str):
     normalized = normalize_text(text).upper()
 
     indicators = [
@@ -192,18 +192,30 @@ def detect_government_warning(text: str):
         "DRINK",
     ]
 
-    matched = []
+    matched = [
+        indicator
+        for indicator in indicators
+        if indicator in normalized
+    ]
 
-    for indicator in indicators:
-        if indicator in normalized:
-            matched.append(indicator)
+    detected = len(matched) >= 3
 
-    found = len(matched) >= 3
+    if not detected:
+        return {
+            "status": "needs_review",
+            "detected": False,
+            "matched_indicators": matched,
+            "message": "Government warning could not be confidently detected."
+        }
 
     return {
-        "found": found,
-        "matched_words": matched,
-        "match_count": len(matched)
+        "status": "needs_review",
+        "detected": True,
+        "matched_indicators": matched,
+        "message": (
+            "Government warning language detected, but exact wording "
+            "and formatting require review."
+        )
     }
 
 def normalize_text(value: str):
@@ -253,11 +265,52 @@ def verify_brand(expected_brand: str, extracted_text: str):
         "message": "Brand name could not be confidently detected."
     }
 
+def verify_class_type(expected_class_type: str, extracted_text: str):
+    normalized_expected = normalize_text(expected_class_type)
+    normalized_ocr = normalize_text(extracted_text)
+
+    if normalized_expected in normalized_ocr:
+        return {
+            "status": "pass",
+            "expected": expected_class_type,
+            "score": 100,
+            "message": "Class/type designation detected on the label."
+        }
+
+    score = fuzz.partial_ratio(
+        normalized_expected,
+        normalized_ocr
+    )
+
+    if score >= 85:
+        return {
+            "status": "pass",
+            "expected": expected_class_type,
+            "score": round(score, 1),
+            "message": "Class/type detected with minor OCR differences."
+        }
+
+    if score >= 65:
+        return {
+            "status": "needs_review",
+            "expected": expected_class_type,
+            "score": round(score, 1),
+            "message": "Possible class/type match. Human review recommended."
+        }
+
+    return {
+        "status": "needs_review",
+        "expected": expected_class_type,
+        "score": round(score, 1),
+        "message": "Class/type could not be confidently detected."
+    }
+
 @app.post("/verify")
 async def verify_label(
     label: UploadFile = File(...),
     expected_abv: float = Form(...),
-    expected_brand: str = Form(...)
+    expected_brand: str = Form(...),
+    expected_class_type: str = Form(...)
 ):
 
     if not label.content_type or not label.content_type.startswith("image/"):
@@ -303,8 +356,9 @@ async def verify_label(
                 "message": "Alcohol content does not match the application."
             }
         net_contents = extract_net_contents(extracted_text)
-        government_warning = detect_government_warning(extracted_text)
+        government_warning = verify_government_warning(extracted_text)
         brand_result = verify_brand(expected_brand, extracted_text)
+        class_type_result = verify_class_type(expected_class_type, extracted_text)
 
         return {
             "filename": label.filename,
@@ -318,7 +372,8 @@ async def verify_label(
             },
             "verification": {
                 "abv": abv_result,
-                "brand": brand_result
+                "brand": brand_result,
+                "class_type": class_type_result
             },
             "extracted_text": extracted_text,
             "status": "OCR completed successfully"

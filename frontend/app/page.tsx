@@ -133,12 +133,13 @@ export default function Home() {
         },
         {
           label: "Government Warning",
-          status: result.extracted_fields?.government_warning?.found
-            ? "pass"
-            : "needs_review",
+          status:
+            result.extracted_fields?.government_warning?.status ??
+            "needs_review",
           expected: "Required",
-          detected: result.extracted_fields?.government_warning?.found
-            ? "Warning language detected"
+          detected:
+          result.extracted_fields?.government_warning?.detected
+            ? "Warning language detected; exact compliance requires review"
             : "Not confidently detected",
         },
         {
