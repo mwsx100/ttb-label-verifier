@@ -1,4 +1,3 @@
-from turtle import width
 from rapidfuzz import fuzz
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,6 +8,8 @@ import base64
 import pytesseract
 import io
 import re
+import json
+import time
 
 app = FastAPI()
 app.add_middleware(
@@ -108,37 +109,14 @@ def get_ocr_score(image: Image.Image):
     )
 
 
-def find_best_rotation(image: Image.Image):
-    rotations = {
-        0: image,
-        90: image.rotate(90, expand=True),
-        180: image.rotate(180, expand=True),
-        270: image.rotate(270, expand=True),
-    }
-
-    best_angle = 0
-    best_score = -1
-    best_confidence = 0
-    best_word_count = 0
-    best_text = ""
-
-    for angle, rotated_image in rotations.items():
-        score, confidence, word_count, text = get_ocr_score(
-            rotated_image
-        )
-
-        if score > best_score:
-            best_score = score
-            best_angle = angle
-            best_confidence = confidence
-            best_word_count = word_count
-            best_text = text
+def run_ocr(image: Image.Image):
+    score, confidence, word_count, text = get_ocr_score(image)
 
     return (
-        best_angle,
-        best_confidence,
-        best_word_count,
-        best_text
+        0,
+        confidence,
+        word_count,
+        text
     )
 
 def extract_abv(text: str):
@@ -270,19 +248,21 @@ def verify_brand(expected_brand: str, extracted_text: str):
 
 def verify_class_type(expected_class_type: str, extracted_text: str):
     normalized_expected = normalize_text(expected_class_type)
-    normalized_ocr = normalize_text(extracted_text)
+    normalized_detected = normalize_text(extracted_text)
 
-    if normalized_expected in normalized_ocr:
+    # Exact normalized match
+    if normalized_expected == normalized_detected:
         return {
             "status": "pass",
             "expected": expected_class_type,
             "score": 100,
-            "message": "Class/type designation detected on the label."
+            "message": "Class/type designation matches."
         }
 
-    score = fuzz.partial_ratio(
+    # Full-string similarity instead of substring similarity
+    score = fuzz.ratio(
         normalized_expected,
-        normalized_ocr
+        normalized_detected
     )
 
     if score >= 85:
@@ -290,7 +270,7 @@ def verify_class_type(expected_class_type: str, extracted_text: str):
             "status": "pass",
             "expected": expected_class_type,
             "score": round(score, 1),
-            "message": "Class/type detected with minor OCR differences."
+            "message": "Class/type detected with minor text differences."
         }
 
     if score >= 65:
@@ -305,17 +285,17 @@ def verify_class_type(expected_class_type: str, extracted_text: str):
         "status": "needs_review",
         "expected": expected_class_type,
         "score": round(score, 1),
-        "message": "Class/type could not be confidently detected."
+        "message": "Class/type could not be confidently matched."
     }
 
-def extract_class_type_with_ai(
+def extract_fields_with_ai(
     image_bytes: bytes,
     content_type: str
 ):
     encoded_image = base64.b64encode(image_bytes).decode("utf-8")
 
     response = client.responses.create(
-        model="gpt-5-mini",
+        model="gpt-4o-mini",
         input=[
             {
                 "role": "user",
@@ -323,14 +303,9 @@ def extract_class_type_with_ai(
                     {
                         "type": "input_text",
                         "text": (
-                            "Examine this alcohol beverage label. "
-                            "Extract only the class or type designation "
-                            "of the beverage, such as 'French Vermouth', "
-                            "'Kentucky Straight Bourbon Whiskey', "
-                            "'Cabernet Sauvignon', or 'India Pale Ale'. "
-                            "Return only the designation. "
-                            "If you cannot determine it confidently, "
-                            "return exactly: UNKNOWN"
+                            "Examine this alcohol beverage label image. "
+                            "Extract only information visibly present in the image. "
+                            "Do not infer missing information from product knowledge."
                         ),
                     },
                     {
@@ -338,18 +313,54 @@ def extract_class_type_with_ai(
                         "image_url": (
                             f"data:{content_type};base64,{encoded_image}"
                         ),
+                        "detail": "high",
                     },
                 ],
             }
         ],
+        text={
+            "format": {
+                "type": "json_schema",
+                "name": "alcohol_label_fields",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "brand_name": {
+                            "type": ["string", "null"]
+                        },
+                        "class_type": {
+                            "type": ["string", "null"]
+                        },
+                        "abv": {
+                            "type": ["number", "null"]
+                        },
+                        "net_contents": {
+                            "type": ["string", "null"]
+                        },
+                        "government_warning_visible": {
+                            "type": "boolean"
+                        }
+                    },
+                    "required": [
+                        "brand_name",
+                        "class_type",
+                        "abv",
+                        "net_contents",
+                        "government_warning_visible"
+                    ],
+                    "additionalProperties": False
+                }
+            }
+        }
     )
 
-    result = response.output_text.strip()
+    text = response.output_text
 
-    if result.upper() == "UNKNOWN":
-        return None
+    if not text:
+        raise ValueError("AI returned no text output.")
 
-    return result
+    return json.loads(text)
 
 @app.post("/verify")
 async def verify_label(
@@ -369,14 +380,99 @@ async def verify_label(
         contents = await label.read()
 
         image = Image.open(io.BytesIO(contents))
+        request_start = time.perf_counter()
+
+        ocr_start = time.perf_counter()
 
         processed_image = preprocess_image(image)
+        
 
-        rotation, confidence, word_count, extracted_text = find_best_rotation(
+        rotation, confidence, word_count, extracted_text = run_ocr(
             processed_image
         )
 
+        ocr_time = time.perf_counter() - ocr_start
+
+        # --------------------------------------------------
+        # First attempt: local OCR
+        # --------------------------------------------------
+
+        ai_fields = None
+        ai_time = 0
+
+        # ABV from OCR
         abv = extract_abv(extracted_text)
+        abv_source = "ocr"
+
+        # Brand from OCR
+        brand_result = verify_brand(
+            expected_brand,
+            extracted_text
+        )
+
+        # Class/type from OCR
+        class_type_result = verify_class_type(
+            expected_class_type,
+            extracted_text
+        )
+
+        # Net contents from OCR
+        net_contents = extract_net_contents(extracted_text)
+        net_contents_source = "ocr"
+
+        # Government warning stays rule-based
+        government_warning = verify_government_warning(extracted_text)
+
+
+        # --------------------------------------------------
+        # Decide whether AI assistance is actually needed
+        # --------------------------------------------------
+
+        needs_ai = (
+            confidence < 50
+            or brand_result["status"] == "needs_review"
+            or class_type_result["status"] == "needs_review"
+        )
+
+
+        # --------------------------------------------------
+        # One AI vision call, only when needed
+        # --------------------------------------------------
+
+        if needs_ai:
+            ai_start = time.perf_counter()
+
+            try:
+                ai_fields = extract_fields_with_ai(
+                    contents,
+                    label.content_type
+                )
+
+            except Exception as e:
+                print(f"AI extraction failed: {e}")
+
+            finally:
+                ai_time = time.perf_counter() - ai_start
+
+
+        # --------------------------------------------------
+        # Use AI to rescue ABV only if OCR missed it
+        # --------------------------------------------------
+
+        if abv is None and ai_fields:
+            ai_abv = ai_fields.get("abv")
+
+            if ai_abv is not None:
+                try:
+                    abv = float(ai_abv)
+                    abv_source = "ai"
+                except (ValueError, TypeError):
+                    pass
+
+
+        # --------------------------------------------------
+        # Final ABV comparison
+        # --------------------------------------------------
 
         if abv is None:
             abv_result = {
@@ -401,44 +497,90 @@ async def verify_label(
                 "detected": abv,
                 "message": "Alcohol content does not match the application."
             }
-        net_contents = extract_net_contents(extracted_text)
-        government_warning = verify_government_warning(extracted_text)
-        brand_result = verify_brand(expected_brand, extracted_text)
-        class_type_result = verify_class_type(expected_class_type, extracted_text)
-        ai_class_type = None
 
-        if class_type_result["status"] == "needs_review":
-            try:
-                ai_class_type = extract_class_type_with_ai(
-                    contents,
-                    label.content_type
-                )           
+        abv_result["source"] = abv_source
 
-                if ai_class_type:
-                    ai_result = verify_class_type(
-                        expected_class_type,
-                        ai_class_type
-                    )
 
-                if ai_result["status"] == "pass":
-                    class_type_result = {
-                        **ai_result,
-                        "detected": ai_class_type,
-                        "source": "ai",
-                        "message": (
-                            "Class/type verified using AI-assisted "
-                            "label extraction."
-                        )
-                    }
-            except Exception as e:
-                print(f"AI fallback failed: {e}")
+        # --------------------------------------------------
+        # Use AI to rescue brand if OCR was uncertain
+        # --------------------------------------------------
+
+        if (
+            brand_result["status"] == "needs_review"
+            and ai_fields
+            and ai_fields.get("brand_name")
+        ):
+            ai_brand = ai_fields["brand_name"]
+
+            ai_brand_result = verify_brand(
+                expected_brand,
+                ai_brand
+            )
+
+            if ai_brand_result["status"] == "pass":
+                brand_result = {
+                    **ai_brand_result,
+                    "detected": ai_brand,
+                    "source": "ai",
+                    "message": "Brand verified using AI-assisted extraction."
+                }
+
+
+        # If OCR passed brand without AI
+        if (
+            brand_result["status"] == "pass"
+            and "source" not in brand_result
+        ):
+            brand_result["source"] = "ocr"
+
+
+        # --------------------------------------------------
+        # Use AI to rescue class/type if OCR was uncertain
+        # --------------------------------------------------
+
+        if (
+            class_type_result["status"] == "needs_review"
+            and ai_fields
+            and ai_fields.get("class_type")
+        ):
+            ai_class_type = ai_fields["class_type"]
+
+            ai_result = verify_class_type(
+                expected_class_type,
+                ai_class_type
+            )
+
+            if ai_result["status"] == "pass":
+                class_type_result = {
+                    **ai_result,
+                    "detected": ai_class_type,
+                    "source": "ai",
+                    "message": "Class/type verified using AI-assisted extraction."
+                }
+
+
+        # If OCR passed class/type without AI
         if (
             class_type_result["status"] == "pass"
             and "source" not in class_type_result
         ):
             class_type_result["source"] = "ocr"
 
-        
+
+        # --------------------------------------------------
+        # Use AI to rescue net contents if OCR missed it
+        # --------------------------------------------------
+
+        if net_contents is None and ai_fields:
+            ai_net_contents = ai_fields.get("net_contents")
+
+            if ai_net_contents:
+                net_contents = ai_net_contents
+                net_contents_source = "ai"
+
+        # Calculate total backend processing time
+        total_time = time.perf_counter() - request_start
+
         return {
             "filename": label.filename,
             "rotation_used": rotation,
@@ -446,7 +588,10 @@ async def verify_label(
             "readable_words": word_count,
             "extracted_fields": {
                 "abv": abv,
-                "net_contents": net_contents,
+                "net_contents": {
+                    "value": net_contents,
+                    "source": net_contents_source
+                },
                 "government_warning": government_warning
             },
             "verification": {
@@ -455,6 +600,11 @@ async def verify_label(
                 "class_type": class_type_result
             },
             "extracted_text": extracted_text,
+            "timing": {
+                "ocr_seconds": round(ocr_time, 2),
+                "ai_seconds": round(ai_time, 2),
+                "total_backend_seconds": round(total_time, 2)
+            },
             "status": "OCR completed successfully"
         }
 
