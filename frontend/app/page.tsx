@@ -4,6 +4,14 @@ import { useEffect, useState } from "react";
 
 type VerificationStatus = "pass" | "fail" | "needs_review";
 
+type VerificationRow = {
+  label: string;
+  status: VerificationStatus;
+  expected: string;
+  detected: string;
+  source: string;
+};
+
 type Result = {
   extracted_fields?: {
     abv?: number | null;
@@ -124,8 +132,8 @@ export default function Home() {
     }
   }
 
-  const results = result
-    ? [
+  const results: VerificationRow[] = result
+  ? [
         {
         label: "Brand Name",
         status: result.verification?.brand?.status ?? "needs_review",
