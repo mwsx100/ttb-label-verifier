@@ -10,19 +10,32 @@ import io
 import re
 import json
 import time
+import os
 
 app = FastAPI()
+
+frontend_origin = os.getenv(
+    "FRONTEND_ORIGIN",
+    "http://localhost:3000"
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[frontend_origin],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-pytesseract.pytesseract.tesseract_cmd = (
-    r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+if os.name == "nt":
+    default_tesseract = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+else:
+    default_tesseract = "/usr/bin/tesseract"
+
+pytesseract.pytesseract.tesseract_cmd = os.getenv(
+    "TESSERACT_CMD",
+    default_tesseract
 )
 
 client = OpenAI()
