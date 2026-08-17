@@ -423,6 +423,7 @@ async def verify_label(
         # Government warning stays rule-based
         government_warning = verify_government_warning(extracted_text)
 
+        
 
         # --------------------------------------------------
         # Decide whether AI assistance is actually needed
@@ -453,6 +454,32 @@ async def verify_label(
 
             finally:
                 ai_time = time.perf_counter() - ai_start
+
+        # --------------------------------------------------
+        # Use AI as supporting evidence for warning presence
+        # --------------------------------------------------
+
+        if (
+            not government_warning["detected"]
+            and ai_fields
+            and ai_fields.get("government_warning_visible") is True
+        ):
+            government_warning = {
+                "status": "needs_review",
+                "detected": True,
+                "matched_indicators": government_warning.get(
+                    "matched_indicators",
+                    []
+                ),
+                "source": "ai",
+                "message": (
+                    "Government warning is visibly present, "
+                    "but exact wording and formatting require review."
+                )
+            }
+
+        elif government_warning["detected"]:
+            government_warning["source"] = "ocr"
 
 
         # --------------------------------------------------

@@ -7,34 +7,57 @@ type VerificationStatus = "pass" | "fail" | "needs_review";
 type Result = {
   extracted_fields?: {
     abv?: number | null;
-    net_contents?: string | null;
+
+    net_contents?: {
+      value: string | null;
+      source: string;
+    };
+
     government_warning?: {
-      found: boolean;
-      matched_words: string[];
-      match_count: number;
+      status: VerificationStatus;
+      detected: boolean;
+      matched_indicators: string[];
+      message: string;
+      source?: string;
     };
   };
+
   verification?: {
     abv?: {
       status: VerificationStatus;
       expected: number;
       detected: number | null;
       message: string;
+      source?: string;
     };
+
     brand?: {
       status: VerificationStatus;
       expected: string;
+      score: number;
       message: string;
+      detected?: string;
+      source?: string;
     };
+
     class_type?: {
       status: VerificationStatus;
       expected: string;
       score: number;
       message: string;
+      detected?: string;
+      source?: string;
     };
   };
+
   ocr_confidence?: number;
   extracted_text?: string;
+
+  timing?: {
+    ocr_seconds: number;
+    ai_seconds: number;
+    total_backend_seconds: number;
+  };
 };
 
 export default function Home() {
@@ -101,13 +124,17 @@ export default function Home() {
   const results = result
     ? [
         {
-          label: "Brand Name",
-          status: result.verification?.brand?.status ?? "needs_review",
-          expected: brand,
-          detected:
-            result.verification?.brand?.status === "pass"
-              ? brand
-              : "Not confidently detected",
+        label: "Brand Name",
+        status: result.verification?.brand?.status ?? "needs_review",
+        expected: brand,
+        detected:
+          result.verification?.brand?.status === "pass"
+            ? brand
+            : "Not confidently detected",
+        source:
+          result.verification?.brand?.source === "ai"
+            ? "AI-assisted extraction"
+            : "OCR + fuzzy match",
         },
 
         {
@@ -117,9 +144,12 @@ export default function Home() {
             "needs_review",
           expected: classType,
           detected:
-            result.verification?.class_type?.status === "pass"
-              ? classType
-              : "Not confidently detected",
+            result.verification?.class_type?.detected ??
+            "Not confidently detected",
+          source:
+            result.verification?.class_type?.source === "ai"
+              ? "AI-assisted extraction"
+              : "OCR",
         },
 
         {
@@ -130,6 +160,10 @@ export default function Home() {
             result.extracted_fields?.abv != null
               ? `${result.extracted_fields.abv}%`
               : "Not detected",
+          source:
+            result.verification?.abv?.source === "ai"
+              ? "AI-assisted extraction + numeric comparison"
+              : "OCR + numeric comparison",
         },
         {
           label: "Government Warning",
@@ -141,16 +175,24 @@ export default function Home() {
           result.extracted_fields?.government_warning?.detected
             ? "Warning language detected; exact compliance requires review"
             : "Not confidently detected",
+          source: 
+            result.extracted_fields?.government_warning?.source === "ai"
+              ? "AI-assisted detection"
+              : "OCR + rule-based detection",
         },
         {
           label: "Net Contents",
-          status: result.extracted_fields?.net_contents
+          status: result.extracted_fields?.net_contents?.value
             ? "pass"
             : "needs_review",
           expected: "Required",
           detected:
-            result.extracted_fields?.net_contents ??
+            result.extracted_fields?.net_contents?.value ??
             "Check label or container marking",
+          source:
+            result.extracted_fields?.net_contents?.source === "ai"
+              ? "AI-assisted extraction"
+              : "OCR",
         },
       ]
     : [];
@@ -351,11 +393,13 @@ function ResultRow({
   status,
   expected,
   detected,
+  source,
 }: {
   label: string;
   status: VerificationStatus;
   expected: string;
   detected: string;
+  source: string;
 }) {
   const statusText = {
     pass: "Pass",
@@ -364,7 +408,7 @@ function ResultRow({
   }[status];
 
   return (
-    <div className="grid gap-3 border-b p-4 last:border-b-0 md:grid-cols-4">
+    <div className="grid gap-3 border-b p-4 last:border-b-0 md:grid-cols-5">
       <div className="font-medium text-slate-900">{label}</div>
 
       <div>
@@ -375,6 +419,11 @@ function ResultRow({
       <div>
         <div className="text-xs uppercase text-slate-400">Detected</div>
         <div className="mt-1 text-sm text-slate-700">{detected}</div>
+      </div>
+
+      <div>
+        <div className="text-xs uppercase text-slate-400">Source</div>
+        <div className="mt-1 text-sm text-slate-700">{source}</div>
       </div>
 
       <div className="md:text-right">
