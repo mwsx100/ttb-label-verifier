@@ -55,6 +55,11 @@ client = OpenAI()
 def home():
     return {"message": "TTB Label Verifier backend is running"}
 
+@app.get("/debug-cors")
+def debug_cors():
+    return {
+        "frontend_origins": frontend_origins
+    }
 
 def preprocess_image(image: Image.Image) -> Image.Image:
     image = ImageOps.exif_transpose(image)
