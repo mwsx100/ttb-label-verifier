@@ -38,6 +38,11 @@ pytesseract.pytesseract.tesseract_cmd = os.getenv(
     default_tesseract
 )
 
+USE_LOCAL_OCR = os.getenv(
+    "USE_LOCAL_OCR",
+    "true"
+).lower() == "true"
+
 client = OpenAI()
 
 @app.get("/")
@@ -395,16 +400,26 @@ async def verify_label(
         image = Image.open(io.BytesIO(contents))
         request_start = time.perf_counter()
 
-        ocr_start = time.perf_counter()
+        ai_fields = None
+        ai_time = 0
 
-        processed_image = preprocess_image(image)
-        
+        if USE_LOCAL_OCR:
+                ocr_start = time.perf_counter()
 
-        rotation, confidence, word_count, extracted_text = run_ocr(
-            processed_image
-        )
+                processed_image = preprocess_image(image)
 
-        ocr_time = time.perf_counter() - ocr_start
+                rotation, confidence, word_count, extracted_text = run_ocr(
+                 processed_image
+                )
+
+                ocr_time = time.perf_counter() - ocr_start
+
+        else:
+            rotation = 0
+            confidence = 0
+            word_count = 0
+            extracted_text = ""
+            ocr_time = 0
 
         # --------------------------------------------------
         # First attempt: local OCR
